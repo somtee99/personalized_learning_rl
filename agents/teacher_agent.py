@@ -11,14 +11,6 @@ df = pd.read_csv("data/cleaned_df.csv")
 os.makedirs("../trainings", exist_ok=True)
 os.makedirs("../models", exist_ok=True)
 
-def clean_skill_list(skill_str):
-    if pd.isnull(skill_str):
-        return []
-    return [s.strip() for s in skill_str.split(',') if s.strip() != '']
-
-df['skill_name_split'] = df['skill_name'].apply(clean_skill_list)
-all_skills = sorted({skill for skills in df['skill_name_split'] for skill in skills})
-
 env = QuestionSelectionEnv()
 
 vec_env = make_vec_env(lambda: env, n_envs=1)
