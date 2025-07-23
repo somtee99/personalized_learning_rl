@@ -1,0 +1,12 @@
+pandas
+stable-baselines3
+torch
+transformers
+sentence-transformers
+textstat
+language-tool-python
+detoxify
+scikit-learn
+matplotlib
+bert_score
+tensorflow==2.18.0
