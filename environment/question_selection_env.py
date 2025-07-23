@@ -1,6 +1,7 @@
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModelForMaskedLM, AutoModel, T5ForConditionalGeneration, T5Tokenizer
+import json
+from transformers import AutoTokenizer, AutoModelForMaskedLM, T5ForConditionalGeneration, T5Tokenizer
 from sentence_transformers import SentenceTransformer
 from bert_score import score as bert_score
 import language_tool_python
@@ -8,37 +9,58 @@ import textstat
 import tensorflow as tf
 from detoxify import Detoxify
 import tensorflow as tf
+from tensorflow import keras
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import gym
 from gym import spaces
+from sklearn.metrics.pairwise import cosine_similarity
 
 class QuestionSelectionEnv(gym.Env):
     def __init__(self, 
                  all_skills, 
-                 lstm_model_path="../models/dkt_model_30_max_seq.keras", 
+                 lstm_model_path="./models/dkt_model_pretrained_384_128.keras",
                  question_types=["Algebra", "Multiple Choice", "Fill in the Blank"],
-                 max_seq_len=30,
+                 max_seq_len=100,
+                 max_steps=200, 
                  device='cpu',
-                 data_df=None):
+                 w_naturalness=0.22,
+                 w_relevance=0.30,
+                 w_answerability=0.25,
+                 w_difficulty=0.08,
+                 w_checklist=0.10,
+                 w_bias=0.05):
         super().__init__()
-        self.all_skills = all_skills
+        # Load all_skills from JSON if not provided
+        if all_skills is None:
+            with open("../curriculum_skills.json", "r") as f:
+                self.all_skills = json.load(f)
+        else:
+            self.all_skills = all_skills
+
         self.device = device
         self.max_seq_len = max_seq_len
         self.question_types = question_types
         self.num_skills = len(self.all_skills)
         self.num_question_types = len(self.question_types)
-        self.data_df = data_df  # Pass your DataFrame here
-        self.current_idx = 0
+        self.max_steps = max_steps
+        self.current_step = 0
+
+        # Reward weights as parameters
+        self.w_naturalness = w_naturalness
+        self.w_relevance = w_relevance
+        self.w_answerability = w_answerability
+        self.w_difficulty = w_difficulty
+        self.w_checklist = w_checklist
+        self.w_bias = w_bias
 
         # Define action space: [skill_id, question_type_id]
         self.action_space = spaces.MultiDiscrete([self.num_skills, self.num_question_types])
 
-        # Example observation space (can be customized as needed)
-        # Here, just a placeholder: student's last performance per skill (vector)
+        # student's last performance per skill (vector)
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.num_skills,), dtype=np.float32)
 
         # Load LSTM student model
-        self.student_model = tf.keras.models.load_model(lstm_model_path)
+        self.student_model = keras.models.load_model(lstm_model_path)
 
         # Load language model for perplexity (naturalness)
         self.lm_tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -47,6 +69,7 @@ class QuestionSelectionEnv(gym.Env):
 
         # Load BERT for semantic similarity
         self.sbert = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+        self.skill_embs = self.sbert.encode(self.all_skills) 
 
         # Grammar checker
         self.grammar_tool = language_tool_python.LanguageTool('en-US')
@@ -62,16 +85,6 @@ class QuestionSelectionEnv(gym.Env):
         # Set up student history performance tracking
         self.student_history = []
         self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
-
-        self.data_df = self.data_df.sort_values(['user_id', 'order_id']).reset_index(drop=True)
-        self.user_ids = self.data_df['user_id'].unique()
-        self.current_user_idx = 0
-        self._set_current_user_indices()
-
-    def _set_current_user_indices(self):
-        current_user_id = self.user_ids[self.current_user_idx]
-        self.current_user_indices = self.data_df.index[self.data_df['user_id'] == current_user_id].tolist()
-        self.current_user_pos = 0
 
     def compute_perplexity(self, text):
         inputs = self.lm_tokenizer(text, return_tensors="pt", truncation=True, max_length=128).to(self.device)
@@ -104,10 +117,10 @@ class QuestionSelectionEnv(gym.Env):
         try:
             # Get embeddings for all skills and the question
             q_emb = self.sbert.encode([question])[0]
-            skill_embs = self.sbert.encode(self.all_skills)
+            skill_embs = self.skill_embs
 
             # Compute cosine similarities
-            sims = np.dot(skill_embs, q_emb) / (np.linalg.norm(skill_embs, axis=1) * np.linalg.norm(q_emb) + 1e-8)
+            sims = cosine_similarity(skill_embs, q_emb.reshape(1, -1)).flatten()
 
             # Get top-k indices
             top_k_indices = np.argsort(sims)[-k:]
@@ -129,8 +142,8 @@ class QuestionSelectionEnv(gym.Env):
         """
         try:
             q_emb = self.sbert.encode([question])[0]
-            skill_embs = self.sbert.encode(self.all_skills)
-            sims = np.dot(skill_embs, q_emb) / (np.linalg.norm(skill_embs, axis=1) * np.linalg.norm(q_emb) + 1e-8)
+            skill_embs = self.skill_embs
+            sims = cosine_similarity(skill_embs, q_emb.reshape(1, -1)).flatten()
 
             top_k_indices = np.argsort(sims)[-k:]
             weights = sims[top_k_indices]
@@ -139,8 +152,7 @@ class QuestionSelectionEnv(gym.Env):
             performances = [self.get_skill_performance(i) for i in top_k_indices]
             weighted_perf = np.dot(weights, performances)
 
-            # Optional: squash to 0.5 - 1 range (like original function)
-            return 0.5 + 0.5 * weighted_perf
+            return weighted_perf
         except Exception as e:
             print(f"Error in compute_answerability: {e}")
             return 0.5
@@ -156,10 +168,10 @@ class QuestionSelectionEnv(gym.Env):
 
             # Step 2: Get question embedding
             q_emb = self.sbert.encode([question])[0]
-            skill_embs = self.sbert.encode(self.all_skills)
+            skill_embs = self.skill_embs
 
             # Step 3: Compute cosine similarity to all skills
-            sims = np.dot(skill_embs, q_emb) / (np.linalg.norm(skill_embs, axis=1) * np.linalg.norm(q_emb) + 1e-8)
+            sims = cosine_similarity(skill_embs, q_emb.reshape(1, -1)).flatten()
 
             # Step 4: Top-k most related skills
             top_k_indices = np.argsort(sims)[-k:]
@@ -217,28 +229,13 @@ class QuestionSelectionEnv(gym.Env):
         # Pad sequence
         X_input = pad_sequences([x_seq], padding='post', maxlen=max_seq_len)
 
-        # Use real extra features from the DataFrame if available
-        if self.data_df is not None and self.current_idx < len(self.data_df):
-            # Get the last max_seq_len rows up to current_idx
-            start_idx = max(0, self.current_idx - max_seq_len + 1)
-            rows = self.data_df.iloc[start_idx:self.current_idx+1]
-            # Extract and pad the extra features
-            extra_features = rows[["hint_count", "attempt_count", "overlap_time"]].to_numpy(dtype=np.float32)
-            # Normalize overlap_time for stability
-            extra_features[:, 2] = extra_features[:, 2] / 1e6
-            # Pad to max_seq_len
-            if extra_features.shape[0] < max_seq_len:
-                pad_len = max_seq_len - extra_features.shape[0]
-                extra_features = np.pad(extra_features, ((pad_len, 0), (0, 0)), mode='constant')
-            extra_input = extra_features[np.newaxis, :, :]
-        else:
-            # Fallback to zeros if no data
-            extra_input = np.zeros((1, max_seq_len, 3), dtype=np.float32)
-
         # Predict with LSTM model
-        y_pred = self.student_model.predict({'skill_input': X_input, 'extra_input': extra_input}, verbose=0)
+        y_pred = self.student_model.predict({'skill_input': X_input}, verbose=0)
+
+        # Get the last non-padded timestep
         last_idx = min(len(x_seq)-1, max_seq_len-1)
-        self.student_performance = y_pred[0, last_idx, :]
+        self.student_performance = y_pred[0, last_idx, :]  # Store latest performance for all skills
+            
         return self.student_performance
     
     def get_skill_performance(self, skill_id):
@@ -328,24 +325,15 @@ class QuestionSelectionEnv(gym.Env):
 
 
     def calculate_reward(self, naturalness, relevance, answerability, difficulty, bias_penalty, checklist_score):
-        w_naturalness = 0.22
-        w_relevance = 0.30
-        w_answerability = 0.25
-        w_difficulty = 0.08
-        w_checklist = 0.10
-        w_bias = 0.05
-        
         difficulty_score = 1.0 - difficulty  
-        
         reward = (
-            w_naturalness * naturalness +
-            w_relevance * relevance +
-            w_answerability * answerability +
-            w_difficulty * difficulty_score +
-            w_checklist * checklist_score -
-            w_bias * bias_penalty  # Bias is a penalty, so subtract
+            self.w_naturalness * naturalness +
+            self.w_relevance * relevance +
+            self.w_answerability * answerability +
+            self.w_difficulty * difficulty_score +
+            self.w_checklist * checklist_score -
+            self.w_bias * bias_penalty  # Bias is a penalty, so subtract
         )
-        
         return reward
 
     def generate_question(self, skill, question_type="open", student_perf=None, max_length=32):
@@ -395,7 +383,7 @@ class QuestionSelectionEnv(gym.Env):
             naturalness, relevance, answerability, difficulty, bias_penalty, checklist_score
         )
 
-        # Example observation: student's predicted performance for all skills
+        #  bservation: student's predicted performance for all skills
         observation = np.array([student_performance], dtype=np.float32)
 
         info = {
@@ -413,9 +401,10 @@ class QuestionSelectionEnv(gym.Env):
             "student_performance": student_performance      
         }
 
-        self.current_user_pos += 1
-        done = self.current_user_pos >= len(self.current_user_indices)
+        self.current_step += 1
+        done = self.current_step >= self.max_steps  # <-- done when max_steps reached
 
+        print('Step ' + self.current_step + ' Complete')
         return observation, reward, done, info
 
     def reset(self):
@@ -423,10 +412,9 @@ class QuestionSelectionEnv(gym.Env):
         Reset the environment and student history.
         Returns initial observation.
         """
-        self.current_user_idx = (self.current_user_idx + 1) % len(self.user_ids)
-        self._set_current_user_indices()
         self.student_history = []
         self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
-        self.current_idx = 0
-        # Example: return neutral performance for all skills
+        self.current_step = 0 
+    
+        # return neutral performance for all skills
         return np.ones(self.num_skills, dtype=np.float32) * 0.5
