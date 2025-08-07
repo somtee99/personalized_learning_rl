@@ -13,6 +13,7 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 import gym
 from gym import spaces
 from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
 
 class QuestionSelectionEnv(gym.Env):
     def __init__(self, 
@@ -22,10 +23,8 @@ class QuestionSelectionEnv(gym.Env):
                  max_seq_len=100,
                  max_steps=200, 
                  device='cpu',
-                 w_naturalness=0.22,
-                 w_relevance=0.30,
                  w_answerability=0.25,
-                 w_difficulty=0.08,
+                 w_improvement=0.08,
                  w_checklist=0.10,
                  w_bias=0.05,
                  top_k=3):
@@ -45,10 +44,8 @@ class QuestionSelectionEnv(gym.Env):
         self.current_step = 0
 
         # Reward weights as parameters
-        self.w_naturalness = w_naturalness
-        self.w_relevance = w_relevance
         self.w_answerability = w_answerability
-        self.w_difficulty = w_difficulty
+        self.w_improvement = w_improvement
         self.w_checklist = w_checklist
         self.w_bias = w_bias
 
@@ -85,6 +82,9 @@ class QuestionSelectionEnv(gym.Env):
         self.deepseek_model.generation_config = GenerationConfig.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
         self.deepseek_model.generation_config.pad_token_id = self.deepseek_model.generation_config.eos_token_id
         
+        # Load questions.csv
+        self.questions_df = pd.read_csv("c:/Users/okafo/Documents/Github/personalized_learning_rl/data/questions.csv")
+
         self.action_history = []
         self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
         self.student_performance_history = []
@@ -227,10 +227,6 @@ class QuestionSelectionEnv(gym.Env):
         bottom_percent = int(weak_skill_threshold * len(sorted_skills))
         weak_skills = [skill_id for skill_id, _ in sorted_skills[:bottom_percent]]
         
-        # Use SBERT to find similarity between question and weak skills
-        if not weak_skills:
-            return 1.0
-        
         # Get embeddings for the question and weak skills
         question_embedding = self.current_question_embedding
         weak_skill_names = [self.all_skills[skill_id] for skill_id in weak_skills]
@@ -266,7 +262,7 @@ class QuestionSelectionEnv(gym.Env):
         reward = (
             # self.w_naturalness * naturalness +
             # self.w_relevance * relevance +
-            improvement_reward +
+            self.w_improvement * improvement_reward +
             self.w_answerability * answerability +
             # self.w_difficulty * difficulty_score +
             self.w_checklist * checklist_score -
@@ -324,21 +320,6 @@ class QuestionSelectionEnv(gym.Env):
         })
         return question
 
-    def compute_relevance(self, question):
-        """
-        Compute the average relevance between the question and top-k most semantically similar skills.
-        Uses self.top_k_indices set during question generation.
-        """
-        try:
-            top_skills = [self.all_skills[i] for i in self.top_k_indices]
-            P, R, F1 = bert_score([question] * self.top_k, top_skills, lang="en", verbose=False)
-            avg_f1 = float(F1.mean())
-            return avg_f1
-        except Exception as e:
-            print(f"Error in compute_relevance for question: {question}\n{e}")
-            print("Falling back to default relevance.")
-            return 0.5
-
     def compute_answerability(self):
         """
         Estimate how answerable a question is based on the student's performance on top-k relevant skills.
@@ -352,6 +333,25 @@ class QuestionSelectionEnv(gym.Env):
         except Exception as e:
             print(f"Error in compute_answerability: {e}")
             return 0.5
+
+    def get_question_from_bank(self, skill, question_type):
+        # Filter for matching skill and question_type
+        matches = self.questions_df[
+            (self.questions_df['skill'] == skill) &
+            (self.questions_df['question_type'] == question_type)
+        ]
+        if matches.empty:
+            # Fallback: pick any question with the skill
+            matches = self.questions_df[self.questions_df['skill'] == skill]
+        if matches.empty:
+            # Fallback: pick any question with the question_type
+            matches = self.questions_df[self.questions_df['question_type'] == question_type]
+        if matches.empty:
+            # Fallback: pick any question
+            matches = self.questions_df
+        # Randomly select one
+        question_row = matches.sample(1).iloc[0]
+        return question_row['question_text']
 
     def step(self, action):
         """
@@ -372,8 +372,8 @@ class QuestionSelectionEnv(gym.Env):
         
         student_performance = self.get_student_performance(skill_id, question_type_id)
 
-        # Generate question based on action
-        question = self.generate_question(skill, question_type)
+        # Get question from bank instead of generating
+        question = self.get_question_from_bank(skill, question_type)
 
         # naturalness = self.compute_naturalness(question)
         # relevance = self.compute_relevance(question)
