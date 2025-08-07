@@ -77,10 +77,10 @@ class QuestionSelectionEnv(gym.Env):
         self.detoxify_model = Detoxify('original')
 
         # Load DeepSeek Math 7B RL for question generation
-        self.deepseek_tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
-        self.deepseek_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-math-7b-rl").to(self.device)
-        self.deepseek_model.generation_config = GenerationConfig.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
-        self.deepseek_model.generation_config.pad_token_id = self.deepseek_model.generation_config.eos_token_id
+        # self.deepseek_tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
+        # self.deepseek_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-math-7b-rl").to(self.device)
+        # self.deepseek_model.generation_config = GenerationConfig.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
+        # self.deepseek_model.generation_config.pad_token_id = self.deepseek_model.generation_config.eos_token_id
         
         # Load questions.csv
         self.questions_df = pd.read_csv("c:/Users/okafo/Documents/Github/personalized_learning_rl/data/questions.csv")
