@@ -1,42 +1,218 @@
 import numpy as np
 import torch
+import os
 import json
 from transformers import AutoTokenizer, GenerationConfig, T5ForConditionalGeneration, T5Tokenizer, AutoModelForCausalLM
 from sentence_transformers import SentenceTransformer
-from bert_score import score as bert_score
-import language_tool_python
+from bert_score import score
 import textstat
 import tensorflow as tf
-from detoxify import Detoxify
 import tensorflow as tf
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 import gym
 from gym import spaces
 from sklearn.metrics.pairwise import cosine_similarity
-import pandas as pd
 
 class QuestionSelectionEnv(gym.Env):
     def __init__(self, 
+                 questions_df,
                  all_skills=None, 
-                 lstm_model_path="./models/dkt_model_pretrained_384_128.keras",
+                 lstm_model_path="./models/dkt_model_pretrained_seq50.keras",
                  question_types=["Algebra", "Multiple Choice", "Fill in the Blank"],
-                 max_seq_len=100,
-                 max_steps=200, 
+                 max_seq_len=50,
+                 max_steps=250, 
                  device='cpu',
-                 w_answerability=0.25,
-                 w_improvement=0.08,
-                 w_checklist=0.10,
-                 w_bias=0.05,
-                 top_k=3):
+                 w_answerability=50,
+                 w_improvement=100,
+                 w_coverage=0.8,
+                 top_k=5,
+                 weak_skills_threshold=0.1
+                 ):
         super().__init__()
         # Load all_skills from JSON if not provided
         if all_skills is None:
-            self.all_skills = ["* () positive reals", "-", "/", "Absolute Value", "Acute", "Addition Whole Numbers", "Addition and Subtraction Fractions", "Addition and Subtraction Integers", "Addition and Subtraction Positive Decimals", "Algebraic Simplification", "Algebraic Solving", "Angles - Obtuse", "Angles on Parallel Lines Cut by a Transversal", "Area Circle", "Area Irregular Figure", "Area Parallelogram", "Area Rectangle", "Area Trapezoid", "Area Triangle", "Box and Whisker", "Calculation with + - * /", "Calculations with Similar Figures", "Choose an Equation from Given Information", "Circle Graph", "Circumference", "Coefficient", "Combinatorics", "Combining Like Terms", "Commutative Property", "Complementary and Supplementary Angles", "Composition of Function Adding", "Compound Interest", "Computation with Real Numbers", "Congruence", "Conversion of Fraction Decimals Percents", "Counting Methods", "D.4.8-understanding-concept-of-probabilities", "Definition Pi", "Distributive Property", "Divisibility Rules", "Division Fractions", "Division Whole Numbers", "Effect of Changing Dimensions of a Shape Prportionally", "English and Metric Terminology", "Equal As Balance Concept", "Equation Solving More Than Two Steps", "Equation Solving Two or Fewer Steps", "Equivalent Fractions", "Estimation", "Expanded", "Exponent", "Exponents", "Factoring Trinomials", "Finding Max and Min from a Quadratic Equation", "Finding Percents", "Finding Ratios", "Finding Slope From Equation", "Finding Slope From Situation", "Finding Slope from Graph", "Finding Slope from Ordered Pairs", "Finding fractions and ratios", "Finding y-intercept from Linear Equation", "Finding y-intercept from Linear Situation", "Fraction Of", "Geometric Definitions", "Graph Shape", "Graphing Inequalities on a number line", "Greatest Common Factor", "Histogram as Table or Graph", "Intercept", "Interior Angles Figures with More than 3 Sides", "Interior Angles Triangle", "Inverse Relations", "Least Common Multiple", "Line Plot", "Line Symmetry", "Line of Best-Fit", "Linear Equations", "Linear area volume conversion", "Mean", "Mean-Median-Mode-Range Differentiation", "Median", "Mode", "Monomial", "Multiplication Fractions", "Multiplication Whole Numbers", "Multiplication and Division Integers", "Multiplication and Division Positive Decimals", "Multiplying Monomials", "Multiplying non Monomial Polynomials", "Nets of 3D Figures", "Number Line", "Order of Operations +", "Order of Operations All", "Ordering Fractions", "Ordering Integers", "Ordering Positive Decimals", "Ordering Real Numbers", "Ordering Whole Numbers", "Parallel and Perpendicular Lines", "Parallel and Perpendicular Slopes", "Parts of a Polyomial", "Pattern Finding", "Percent Discount", "Percent Increase or Decrease", "Percent Of", "Percents", "Perimeter of a Polygon", "Picking Equation and Inequality from Choices", "Point Plotting", "Polynomial Factors", "Prime Number", "Probability of Two Distinct Events", "Probability of a Single Event", "Properties and Classification Quadrilaterals", "Properties and Classification Rectangular Prisms", "Properties and Classification Triangles", "Properties of Numbers", "Proportion", "Pythagorean Theorem", "Quadratic Equation Solving", "Range", "Rate", "Reading a Ruler or Scale", "Recognize Linear Pattern", "Recognizing Equivalent Expressions", "Reflection", "Rotations", "Rounding", "Sampling Techniques", "Scale Factor", "Scatter Plot", "Scientific Notation", "Similar Figures", "Simplifying Expressions positive exponents", "Slope", "Solve Quadratic Equations Using Factoring", "Solving Inequalities", "Solving System of Equation", "Solving Systems of Linear Equations", "Solving for a variable", "Square Root", "Square Roots", "Standard and Word Notation", "Stem and Leaf Plot", "Substitution", "Subtraction Whole Numbers", "Surface Area Cylinder", "Surface Area Rectangular Prism", "Surface Area Sphere", "Surface Area of 3D Objects", "Symbolization", "Table", "Terms", "Transformation", "Translations", "Unit Conversion Standard to Metric", "Unit Conversion Within a System", "Unit Rate", "Variable", "Venn Diagram", "Volume Cone", "Volume Cylinder", "Volume Prism", "Volume Pyramid", "Volume Rectangular Prism", "Volume Sphere", "Volume of 3D Objects", "Write Linear Equation from Graph", "Write Linear Equation from Ordered Pairs", "Write Linear Equation from Situation", "Writine Expression from Diagrams", "X-Y Graph Reading", "and Right"]
+            self.all_skills = [
+                "* () positive reals",
+                "-",
+                "/",
+                "Absolute Value",
+                "Addition Whole Numbers",
+                "Addition and Subtraction Fractions",
+                "Addition and Subtraction Integers",
+                "Addition and Subtraction Positive Decimals",
+                "Algebraic Simplification",
+                "Algebraic Solving",
+                "Angles - Acute",
+                "Angles - Obtuse",
+                "Angles - Right",
+                "Angles on Parallel Lines Cut by a Transversal",
+                "Area Circle",
+                "Area Irregular Figure",
+                "Area Parallelogram",
+                "Area Rectangle",
+                "Area Trapezoid",
+                "Area Triangle",
+                "Box and Whisker",
+                "Calculation with + - * /",
+                "Calculations with Similar Figures",
+                "Choose an Equation from Given Information",
+                "Circle Graph",
+                "Circumference",
+                "Coefficient",
+                "Combinatorics",
+                "Combining Like Terms",
+                "Commutative Property",
+                "Complementary and Supplementary Angles",
+                "Composition of Function Adding",
+                "Compound Interest",
+                "Computation with Real Numbers",
+                "Congruence",
+                "Conversion of Fraction Decimals Percents",
+                "Counting Methods",
+                "Definition Pi",
+                "Distributive Property",
+                "Divisibility Rules",
+                "Division Fractions",
+                "Division Whole Numbers",
+                "Effect of Changing Dimensions of a Shape Proportionally",
+                "English and Metric Terminology",
+                "Equal As Balance Concept",
+                "Equation Solving More Than Two Steps",
+                "Equation Solving Two or Fewer Steps",
+                "Equivalent Fractions",
+                "Estimation",
+                "Expanded",
+                "Exponent",
+                "Exponents",
+                "Factoring Trinomials",
+                "Finding Max and Min from a Quadratic Equation",
+                "Finding Percents",
+                "Finding Ratios",
+                "Finding Slope From Equation",
+                "Finding Slope From Situation",
+                "Finding Slope from Graph",
+                "Finding Slope from Ordered Pairs",
+                "Finding fractions and ratios",
+                "Finding y-intercept from Linear Equation",
+                "Finding y-intercept from Linear Situation",
+                "Fraction Of",
+                "Geometric Definitions",
+                "Graph Shape",
+                "Graphing Inequalities on a number line",
+                "Greatest Common Factor",
+                "Histogram as Table or Graph",
+                "Intercept",
+                "Interior Angles Figures with More than 3 Sides",
+                "Interior Angles Triangle",
+                "Inverse Relations",
+                "Least Common Multiple",
+                "Line Plot",
+                "Line Symmetry",
+                "Line of Best-Fit",
+                "Linear Equations",
+                "Linear area volume conversion",
+                "Mean",
+                "Mean-Median-Mode-Range Differentiation",
+                "Median",
+                "Mode",
+                "Monomial",
+                "Multiplication Fractions",
+                "Multiplication Whole Numbers",
+                "Multiplication and Division Integers",
+                "Multiplication and Division Positive Decimals",
+                "Multiplying Monomials",
+                "Multiplying non Monomial Polynomials",
+                "Nets of 3D Figures",
+                "Number Line",
+                "Order of Operations",
+                "Order of Operations All",
+                "Ordering Fractions",
+                "Ordering Integers",
+                "Ordering Positive Decimals",
+                "Ordering Real Numbers",
+                "Ordering Whole Numbers",
+                "Parallel and Perpendicular Lines",
+                "Parallel and Perpendicular Slopes",
+                "Parts of a Polyomial",
+                "Pattern Finding",
+                "Percent Discount",
+                "Percent Increase or Decrease",
+                "Percent Of",
+                "Percents",
+                "Perimeter of a Polygon",
+                "Picking Equation and Inequality from Choices",
+                "Point Plotting",
+                "Polynomial Factors",
+                "Prime Number",
+                "Probability of Two Distinct Events",
+                "Probability of a Single Event",
+                "Properties and Classification Quadrilaterals",
+                "Properties and Classification Rectangular Prisms",
+                "Properties and Classification Triangles",
+                "Properties of Numbers",
+                "Proportion",
+                "Pythagorean Theorem",
+                "Quadratic Equation Solving",
+                "Range",
+                "Rate",
+                "Reading a Ruler or Scale",
+                "Recognize Linear Pattern",
+                "Recognizing Equivalent Expressions",
+                "Reflection",
+                "Rotations",
+                "Rounding",
+                "Sampling Techniques",
+                "Scale Factor",
+                "Scatter Plot",
+                "Scientific Notation",
+                "Similar Figures",
+                "Simplifying Expressions positive exponents",
+                "Slope",
+                "Solve Quadratic Equations Using Factoring",
+                "Solving Inequalities",
+                "Solving System of Equation",
+                "Solving Systems of Linear Equations",
+                "Solving for a variable",
+                "Square Root",
+                "Square Roots",
+                "Standard and Word Notation",
+                "Stem and Leaf Plot",
+                "Substitution",
+                "Subtraction Whole Numbers",
+                "Surface Area Cylinder",
+                "Surface Area Rectangular Prism",
+                "Surface Area Sphere",
+                "Surface Area of 3D Objects",
+                "Symbolization",
+                "Table",
+                "Terms",
+                "Transformation",
+                "Translations",
+                "Understanding Concept of Probabilities",
+                "Unit Conversion Standard to Metric",
+                "Unit Conversion Within a System",
+                "Unit Rate",
+                "Variable",
+                "Venn Diagram",
+                "Volume Cone",
+                "Volume Cylinder",
+                "Volume Prism",
+                "Volume Pyramid",
+                "Volume Rectangular Prism",
+                "Volume Sphere",
+                "Volume of 3D Objects",
+                "Write Linear Equation from Graph",
+                "Write Linear Equation from Ordered Pairs",
+                "Write Linear Equation from Situation",
+                "Writing Expression from Diagrams",
+                "X-Y Graph Reading"
+            ]
         else:
             self.all_skills = all_skills
 
         self.device = device
         self.max_seq_len = max_seq_len
+        self.weak_skills_threshold = weak_skills_threshold
         self.question_types = question_types
         self.num_skills = len(self.all_skills)
         self.num_question_types = len(self.question_types)
@@ -46,8 +222,7 @@ class QuestionSelectionEnv(gym.Env):
         # Reward weights as parameters
         self.w_answerability = w_answerability
         self.w_improvement = w_improvement
-        self.w_checklist = w_checklist
-        self.w_bias = w_bias
+        self.w_coverage = w_coverage
 
         # Define action space: [skill_id, question_type_id]
         self.action_space = spaces.MultiDiscrete([self.num_skills, self.num_question_types])
@@ -64,65 +239,18 @@ class QuestionSelectionEnv(gym.Env):
         # Load BERT for semantic similarity
         self.sbert = SentenceTransformer('all-MiniLM-L6-v2', device=device)
         self.skill_embs = self.sbert.encode(self.all_skills) 
-
-        # Grammar checker
-        # self.grammar_tool = language_tool_python.LanguageTool('en-US')
-
-        # Load T5 for question generation (valhalla/t5-base-qg-hl)
-        self.t5_tokenizer = T5Tokenizer.from_pretrained("valhalla/t5-base-qg-hl")
-        self.t5_model = T5ForConditionalGeneration.from_pretrained("valhalla/t5-base-qg-hl").to(self.device)
-        self.t5_model.eval()
-
-        # Detoxify for bias/toxicity detection
-        self.detoxify_model = Detoxify('original')
-
-        # Load DeepSeek Math 7B RL for question generation
-        # self.deepseek_tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
-        # self.deepseek_model = AutoModelForCausalLM.from_pretrained("deepseek-ai/deepseek-math-7b-rl").to(self.device)
-        # self.deepseek_model.generation_config = GenerationConfig.from_pretrained("deepseek-ai/deepseek-math-7b-rl")
-        # self.deepseek_model.generation_config.pad_token_id = self.deepseek_model.generation_config.eos_token_id
         
-        # Load questions.csv
-        self.questions_df = pd.read_csv("c:/Users/okafo/Documents/Github/personalized_learning_rl/data/questions.csv")
+        # Load questions
+        self.questions_df = questions_df
 
-        self.action_history = []
+        self.history = []
         self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
         self.student_performance_history = []
 
         self.current_question_embedding = None 
-        self.questions_history = []  # Store all generated questions
-       
-
-    def compute_difficulty(self, question, k=3):
-        """
-        Compute difficulty as the difference between linguistic complexity and student's readiness for the top-k relevant skills.
-        """
-        try:
-            # Step 1: Get linguistic difficulty (Flesch-Kincaid grade, normalized)
-            grade = textstat.flesch_kincaid_grade(question)
-            linguistic_difficulty = np.clip((grade - 1) / 11, 0, 1)
-
-            # Step 2: Get question embedding
-            q_emb = self.current_question_embedding
-            skill_embs = self.skill_embs
-
-            # Step 3: Compute cosine similarity to all skills
-            sims = cosine_similarity(skill_embs, q_emb.reshape(1, -1)).flatten()
-
-            # Step 4: Top-k most related skills
-            top_k_indices = np.argsort(sims)[-k:]
-            performances = [self.get_skill_performance(i) for i in top_k_indices]
-            avg_perf = np.mean(performances)
-
-            # Step 5: Difficulty = mismatch between question complexity and student readiness
-            mismatch = np.clip(linguistic_difficulty - avg_perf, 0, 1)
-            return mismatch
-        except Exception as e:
-            print(f"Error computing difficulty for question: {question} — {e}")
-            return 0.5  # Neutral default
 
 
-    def get_student_performance(self, new_skill_id=None, new_question_type_id=None):
+    def predict_student_performance(self, new_skill_id=None, new_question_type_id=None):
         """
         Predicts the student's performance using the LSTM student model.
         Stores and updates the student's interaction history for use as LSTM input.
@@ -134,16 +262,19 @@ class QuestionSelectionEnv(gym.Env):
         """
 
         # Prepare the latest sequence for prediction (pad/truncate as needed)
-        # Assume self.action_history is a list of (skill_id, correct, question_type_id)
         max_seq_len = self.max_seq_len  # or use the same as in training
-        num_skills = len(self.all_skills)
+        num_skills = self.num_skills
 
-        if len(self.action_history) == 0 and new_skill_id is None:
+        if len(self.history) == 0 and new_skill_id is None:
             # If no history and no new skill, return neutral performance for all skills
             return np.ones(num_skills, dtype=np.float32) * 0.5
 
-        # Start with existing history
-        history_to_encode = self.action_history.copy()
+        # Only use relevant fields for encoding
+        history_to_encode = [
+            (h["skill_id"], h["predicted_correctness_for_skill"], h["question_type_id"])
+            for h in self.history
+            if "skill_id" in h and "predicted_correctness_for_skill" in h and "question_type_id" in h
+        ]
         
         # Add new skill/question type if provided
         if new_skill_id is not None and new_question_type_id is not None:
@@ -181,40 +312,19 @@ class QuestionSelectionEnv(gym.Env):
         """
         return self.student_performance[skill_id]
 
-    def update_action_history(self, skill_id, correct, question_type_id):
+    def update_history(self, info):
         """
-        Update the student's interaction history with the latest (skill_id, correct, question_type_id).
+        Update the student's interaction history.
         """
-        self.action_history.append((skill_id, correct, question_type_id))
-
-    def compute_bias_score(self, question):
-        """
-        Uses Detoxify to score toxicity/bias. Returns a penalty (0 to 1, higher = more bias/toxicity).
-        """
-        relevant_keys = [
-            "toxicity",
-            "severe_toxicity",
-            "identity_attack",
-            "insult",
-            "threat",
-            "obscene",
-        ]
-        try:
-            scores = self.detoxify_model.predict(question)
-            bias_penalty = max(scores.get(k, 0) for k in relevant_keys)
-            #Apply scaling or thresholding 
-            bias_penalty = min(1.0, bias_penalty * 1.1)  # example scaling
-        except Exception:
-            bias_penalty = 0.0
-        return bias_penalty
+        self.history.append(info)
 
 
-    def checklist_coverage(self, weak_skill_threshold=0.6):
+    def weak_skill_coverage(self):
         """
         Analyzes student performance gaps across all skills and checks if the question
         addresses the most needed skills based on performance history using SBERT similarity.
         """
-        if not hasattr(self, "action_history") or not self.action_history:
+        if not hasattr(self, "history") or not self.history:
             return 1.0
         
         # Calculate performance for each skill
@@ -224,7 +334,7 @@ class QuestionSelectionEnv(gym.Env):
         
         # Identify the bottom X% of skills (most needed) based on threshold
         sorted_skills = sorted(skill_performances.items(), key=lambda x: x[1])
-        bottom_percent = int(weak_skill_threshold * len(sorted_skills))
+        bottom_percent = int(self.weak_skills_threshold * len(sorted_skills))
         weak_skills = [skill_id for skill_id, _ in sorted_skills[:bottom_percent]]
         
         # Get embeddings for the question and weak skills
@@ -242,83 +352,29 @@ class QuestionSelectionEnv(gym.Env):
             weighted_similarity = similarities[i] * weakness_weight
             weighted_similarities.append(weighted_similarity)
         
-        # Calculate coverage score based on weighted average of similarities
-        if weighted_similarities:
-            avg_weighted_similarity = np.mean(weighted_similarities)
-            coverage_score = 0.5 + 0.5 * avg_weighted_similarity
+          # Calculate cosine similarities
+        similarities = cosine_similarity(weak_skill_embeddings, question_embedding.reshape(1, -1)).flatten()
+
+        # Use average similarity as alignment score, normalized to [0, 1]
+        if len(similarities) > 0:
+            alignment_score = np.clip(np.mean(similarities), 0, 1)
         else:
-            coverage_score = 0.5
-        
-        return min(1.0, max(0.0, coverage_score))
+            alignment_score = 0.5  # Neutral if no weak skills
+
+        return alignment_score
 
 
-    def calculate_reward(self, answerability, bias_penalty, checklist_score):
+    def calculate_reward(self, improvement, answerability, coverage):
+        improvement = self.w_improvement * improvement
+        answerability = self.w_answerability * answerability
+        coverage = self.w_coverage * coverage
 
-        if len(self.student_performance_history) > 1:
-            improvement_reward = float(np.mean(self.student_performance_history[-1])) - float(np.mean(self.student_performance_history[-2])) 
-        else:
-            improvement_reward = 0.0  # No improvement on first step
-    
         reward = (
-            # self.w_naturalness * naturalness +
-            # self.w_relevance * relevance +
-            self.w_improvement * improvement_reward +
-            self.w_answerability * answerability +
-            # self.w_difficulty * difficulty_score +
-            self.w_checklist * checklist_score -
-            self.w_bias * bias_penalty  # Bias is a penalty, so subtract
+            improvement + #tanh (-1 to 1)
+            answerability + #sigmoid (0-1)
+            coverage 
         )
         return reward
-
-    def generate_question(self, skill, question_type="open", max_length=100):
-        """
-        Generate a question using DeepSeek Math 7B RL, conditioned on skill and question type.
-        Uses the official chat template for best results.
-        """
-        # Compose the prompt as recommended by DeepSeekMath
-        prompt = (
-            f"Generate a {question_type} question about {skill}.\n"
-            "Please reason step by step, and put your final answer within \\boxed{}."
-        )
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
-        input_tensor = self.deepseek_tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt"
-        )
-        input_tensor = input_tensor.to(self.deepseek_model.device)
-        with torch.no_grad():
-            outputs = self.deepseek_model.generate(
-                input_tensor, max_new_tokens=max_length
-            )
-        # Only decode the newly generated tokens
-        result = self.deepseek_tokenizer.decode(
-            outputs[0][input_tensor.shape[1]:], skip_special_tokens=True
-        )
-        question = result.strip()
-        self.current_question_embedding = self.sbert.encode([question])[0]
-
-        # Compute cosine similarities and store top_k_indices
-        sims = cosine_similarity(self.skill_embs, self.current_question_embedding.reshape(1, -1)).flatten()
-        self.top_k_indices = np.argsort(sims)[-self.top_k:]
-        top_skills = [self.all_skills[i] for i in self.top_k_indices]
-
-        # Predicted correctness for this skill
-        predicted_correctness = float(self.student_performance[self.all_skills.index(skill)]) \
-            if skill in self.all_skills else None
-
-        # Initialize question_history if not present
-        if not hasattr(self, "questions_history"):
-            self.question_history = []
-
-        self.question_history.append({
-            "question": question,
-            "skill": skill,
-            "predicted_correctness_for_skill": predicted_correctness,
-            "question_type": question_type,
-            "top_related_skills": top_skills
-        })
-        return question
 
     def compute_answerability(self):
         """
@@ -351,7 +407,15 @@ class QuestionSelectionEnv(gym.Env):
             matches = self.questions_df
         # Randomly select one
         question_row = matches.sample(1).iloc[0]
-        return question_row['question_text']
+        question = question_row['question_text']
+
+        self.current_question_embedding = self.sbert.encode([question])[0]
+
+        # Compute cosine similarities and store top_k_indices
+        sims = cosine_similarity(self.skill_embs, self.current_question_embedding.reshape(1, -1)).flatten()
+        self.top_k_indices = np.argsort(sims)[-self.top_k:]
+
+        return question
 
     def step(self, action):
         """
@@ -370,61 +434,85 @@ class QuestionSelectionEnv(gym.Env):
         skill = self.all_skills[skill_id]
         question_type = self.question_types[question_type_id]
         
-        student_performance = self.get_student_performance(skill_id, question_type_id)
+        student_performance = self.predict_student_performance(skill_id, question_type_id)
+        # Store performance history
+        self.student_performance_history.append(student_performance)
 
-        # Get question from bank instead of generating
+        # Get question from bank 
         question = self.get_question_from_bank(skill, question_type)
 
-        # naturalness = self.compute_naturalness(question)
-        # relevance = self.compute_relevance(question)
-        answerability = self.compute_answerability(question)
-        bias_penalty = self.compute_bias_score(question)
-        checklist_score = self.checklist_coverage(question)
+        # Use average performance improvement across all skills
+        if len(self.student_performance_history) > 1:
+            prev_avg_perf = float(np.mean(self.student_performance_history[-2]))
+            curr_avg_perf = float(np.mean(self.student_performance_history[-1]))
+            improvement_reward = curr_avg_perf - prev_avg_perf
+        else:
+            improvement_reward = 0.0
 
-        reward = self.calculate_reward(
-            # naturalness, relevance, 
-            answerability, bias_penalty, checklist_score
-        )
+        answerability = self.compute_answerability()
+        weak_skill_coverage = self.weak_skill_coverage()
+
+        reward = self.calculate_reward(improvement_reward, answerability, weak_skill_coverage)
 
         # Observation: student's predicted performance for all skills
         observation = np.array([student_performance], dtype=np.float32)
 
-        # Calculate student's average performance across all skills
-        avg_student_performance = float(np.mean(student_performance))
-
-        # Store average performance history
-        self.student_performance_history.append(student_performance)
-
         info = {
-            # "naturalness": naturalness,
-            # "relevance": relevance,
-            "answerability": answerability,
-            "bias_penalty": bias_penalty,
-            "checklist_score": checklist_score,
             "question": question,
             "skill": skill,
-            # "skill_id": skill_id,
+            "improvement": float(improvement_reward*self.w_improvement),
+            "answerability": float(answerability*self.w_answerability),
+            "coverage": float(weak_skill_coverage*self.w_coverage),
             "question_type": question_type,
-            # "question_type_id": question_type_id,
-            "student_avg_performance": avg_student_performance,
+            "predicted_correctness_for_skill": float(student_performance[skill_id]),
+            "student_performance_per_skill": {k: float(v) for k, v in zip(self.all_skills, student_performance.tolist())},
+            "skill_id": int(skill_id),
+            "question_type_id": int(question_type_id),
+            "reward": float(reward),
         }
+        # Update action history
+        self.update_history(info)
 
         self.current_step += 1
         done = self.current_step >= self.max_steps  # <-- done when max_steps reached
 
+        if done:
+            self.save_history_json()
+
+        print(
+            f"Step {self.current_step} | "
+            f"Question: {info['question']} | "
+            f"Skill: {info['skill']} | "
+            f"Type: {info['question_type']} | "
+            f"AvgPerf: {(np.mean(student_performance) * self.w_improvement):.3f} | "
+            f"Improvement: {info['improvement']:.3f} | "
+            f"Answerability: {info['answerability']:.3f} | "
+            f"Coverage: {info['coverage']:.3f} | "
+            f"Reward: {reward:.3f}"
+        )
         print(f'Step {self.current_step} Complete')
-        print(info)
+
         return observation, reward, done, info
+
+    def save_history_json(self, path="trainings/history/history.json"):
+        """
+        Save the environment's history to a JSON file.
+        Ensures the directory exists before saving.
+        """
+        dir_name = os.path.dirname(path)
+        if dir_name and not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.history, f, ensure_ascii=False, indent=2)
 
     def reset(self):
         """
         Reset the environment and student history.
         Returns initial observation.
         """
-        self.action_history = []
+        self.history = []
         self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
         self.current_step = 0 
-        self.question_history = []
         self.current_question_embedding = None
     
         # Reset student performance history
