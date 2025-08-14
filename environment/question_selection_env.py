@@ -26,10 +26,11 @@ class QuestionSelectionEnv(gym.Env):
                  w_improvement=100,
                  w_coverage=0.8,
                  top_k=3,
-                 weak_skills_threshold=0.7
+                 weak_skills_threshold=0.7,
+                 action_types=['type', 'skill'] 
                  ):
         super().__init__()
-        # Load all_skills from JSON if not provided
+        self.action_types = action_types
         if all_skills is None:
             self.all_skills = [
                 "* () positive reals",
@@ -418,13 +419,18 @@ class QuestionSelectionEnv(gym.Env):
         return question
 
     def step(self, action):
-        """
-        RL step: action is an array [skill_id, question_type_id]
-        Returns: observation, reward, done, info
-        """
-        if not isinstance(action, (list, np.ndarray)) or len(action) != 2:
-            raise ValueError("Action must be an array-like of [skill_id, question_type_id]")
-        skill_id, question_type_id = int(action[0]), int(action[1])
+        # Handle action_types logic
+        if not self.action_types:  # Random selection
+            skill_id = np.random.randint(self.num_skills)
+            question_type_id = np.random.randint(self.num_question_types)
+        elif self.action_types == ['skill']:
+            skill_id = int(action[0])
+            question_type_id = np.random.randint(self.num_question_types)
+        elif self.action_types == ['type', 'skill'] or self.action_types == ['skill', 'type']:
+            skill_id = int(action[0])
+            question_type_id = int(action[1])
+        else:
+            raise ValueError(f"Unsupported action_types: {self.action_types}")
 
         if skill_id < 0 or skill_id >= self.num_skills:
             raise ValueError(f"Skill id '{skill_id}' out of range.")
@@ -500,7 +506,7 @@ class QuestionSelectionEnv(gym.Env):
         Ensures the directory exists before saving.
         """
         dir_name = os.path.dirname(path)
-        if dir_name and not os.path.exists(dir_name):
+        if (dir_name and not os.path.exists(dir_name)):
             os.makedirs(dir_name, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.history, f, ensure_ascii=False, indent=2)
