@@ -34,5 +34,5 @@ model = PPO(
     policy_kwargs=dict(net_arch=[128, 128])
 )
 print("Starting training...")
-model.learn(total_timesteps=50000)
+model.learn(total_timesteps=1000000)
 model.save("./models/teacher/ppo_teacher_agent")

@@ -25,8 +25,8 @@ class QuestionSelectionEnv(gym.Env):
                  w_answerability=50,
                  w_improvement=100,
                  w_coverage=0.8,
-                 top_k=5,
-                 weak_skills_threshold=0.1
+                 top_k=3,
+                 weak_skills_threshold=0.7
                  ):
         super().__init__()
         # Load all_skills from JSON if not provided
