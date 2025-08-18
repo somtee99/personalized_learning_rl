@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from environment.question_selection_env import QuestionSelectionEnv
 import pandas as pd
 from stable_baselines3 import PPO
@@ -11,7 +11,7 @@ questions_df = pd.read_csv("./data/questions.csv")
 os.makedirs("./trainings", exist_ok=True)
 os.makedirs("./models/teacher", exist_ok=True)
 
-env = QuestionSelectionEnv(questions_df, max_steps=500)
+env = QuestionSelectionEnv(questions_df, max_steps=250)
 
 vec_env = make_vec_env(lambda: env, n_envs=1)
 
@@ -34,5 +34,5 @@ model = PPO(
     policy_kwargs=dict(net_arch=[128, 128])
 )
 print("Starting training...")
-model.learn(total_timesteps=1000000)
+model.learn(total_timesteps=500000)
 model.save("./models/teacher/ppo_teacher_agent")

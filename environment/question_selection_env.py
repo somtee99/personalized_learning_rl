@@ -20,13 +20,13 @@ class QuestionSelectionEnv(gym.Env):
                  lstm_model_path="./models/dkt_model_pretrained_seq50.keras",
                  question_types=["Algebra", "Multiple Choice", "Fill in the Blank"],
                  max_seq_len=50,
-                 max_steps=250, 
+                 max_steps=300, 
                  device='cpu',
                  w_answerability=50,
                  w_improvement=100,
-                 w_coverage=0.8,
+                 w_coverage=0.5,
                  top_k=3,
-                 weak_skills_threshold=0.7,
+                 weak_skills_threshold=0.4,
                  action_types=['type', 'skill'] 
                  ):
         super().__init__()
@@ -245,10 +245,11 @@ class QuestionSelectionEnv(gym.Env):
         self.questions_df = questions_df
 
         self.history = []
-        self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
+        self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0
         self.student_performance_history = []
 
         self.current_question_embedding = None 
+        self.question_embedding_cache = {}  # Add cache for question embeddings
 
 
     def predict_student_performance(self, new_skill_id=None, new_question_type_id=None):
@@ -267,8 +268,8 @@ class QuestionSelectionEnv(gym.Env):
         num_skills = self.num_skills
 
         if len(self.history) == 0 and new_skill_id is None:
-            # If no history and no new skill, return neutral performance for all skills
-            return np.ones(num_skills, dtype=np.float32) * 0.5
+            # If no history and no new skill, return NULL performance for all skills
+            return np.ones(num_skills, dtype=np.float32) * 0
 
         # Only use relevant fields for encoding
         history_to_encode = [
@@ -284,9 +285,6 @@ class QuestionSelectionEnv(gym.Env):
                 assumed_correct = self.student_performance[new_skill_id] 
             
             history_to_encode.append((new_skill_id, assumed_correct, new_question_type_id))
-
-        if len(history_to_encode) == 0:
-            return np.ones(num_skills, dtype=np.float32) * 0.5
 
         # Encode history as in DKT: x_encoded = skill + correct * num_skills + qtype * num_skills * 2
         x_seq = [
@@ -319,50 +317,60 @@ class QuestionSelectionEnv(gym.Env):
         """
         self.history.append(info)
 
+    def weak_skill_coverage(self, selected_skill_id=None):
+        """
+        Measures how well the selected question targets the student's weakest skills,
+        without using embeddings. Returns 1 if the skill is among the weakest, else 0.
+        """
+        # Calculate performance for each skill as a NumPy array
+        skill_performances = np.array([self.get_skill_performance(skill_id) for skill_id in range(self.num_skills)], dtype=np.float32)
 
-    def weak_skill_coverage(self):
-        """
-        Analyzes student performance gaps across all skills and checks if the question
-        addresses the most needed skills based on performance history using SBERT similarity.
-        """
-        if not hasattr(self, "history") or not self.history:
-            return 1.0
-        
-        # Calculate performance for each skill
-        skill_performances = {}
-        for skill_id in range(self.num_skills):
-            skill_performances[skill_id] = self.get_skill_performance(skill_id)
-        
         # Identify the bottom X% of skills (most needed) based on threshold
-        sorted_skills = sorted(skill_performances.items(), key=lambda x: x[1])
-        bottom_percent = int(self.weak_skills_threshold * len(sorted_skills))
-        weak_skills = [skill_id for skill_id, _ in sorted_skills[:bottom_percent]]
-        
-        # Get embeddings for the question and weak skills
-        question_embedding = self.current_question_embedding
-        weak_skill_names = [self.all_skills[skill_id] for skill_id in weak_skills]
-        weak_skill_embeddings = self.sbert.encode(weak_skill_names)
-        
-        # Calculate cosine similarities using sklearn
-        similarities = cosine_similarity(weak_skill_embeddings, question_embedding.reshape(1, -1)).flatten()
-        
-        # Weight similarities by how weak each skill is (lower performance = higher weight)
-        weighted_similarities = []
-        for i, skill_id in enumerate(weak_skills):
-            weakness_weight = 1.0 - skill_performances[skill_id]  # Higher weight for weaker skills
-            weighted_similarity = similarities[i] * weakness_weight
-            weighted_similarities.append(weighted_similarity)
-        
-          # Calculate cosine similarities
-        similarities = cosine_similarity(weak_skill_embeddings, question_embedding.reshape(1, -1)).flatten()
+        sorted_indices = np.argsort(skill_performances)
+        bottom_percent = int(self.weak_skills_threshold * len(sorted_indices))
+        weak_skills = set(sorted_indices[:bottom_percent])
 
-        # Use average similarity as alignment score, normalized to [0, 1]
-        if len(similarities) > 0:
-            alignment_score = np.clip(np.mean(similarities), 0, 1)
-        else:
-            alignment_score = 0.5  # Neutral if no weak skills
+        # If selected_skill_id is not provided, use last skill from history
+        if selected_skill_id is None and self.history:
+            selected_skill_id = self.history[-1]["skill_id"]
 
-        return alignment_score
+        # Coverage is 1 if selected skill is among the weakest, else 0
+        coverage = 1.0 if selected_skill_id in weak_skills else 0.0
+        return coverage
+
+    # def weak_skill_coverage(self):
+    #     """
+    #     Analyzes student performance gaps across all skills and checks if the question
+    #     addresses the most needed skills based on performance history using SBERT similarity.
+    #     Uses NumPy arrays for performance-critical operations.
+    #     """
+    #     if not hasattr(self, "history") or not self.history:
+    #         return 1.0
+
+    #     # Calculate performance for each skill as a NumPy array
+    #     skill_performances = np.array([self.get_skill_performance(skill_id) for skill_id in range(self.num_skills)], dtype=np.float32)
+
+    #     # Identify the bottom X% of skills (most needed) based on threshold
+    #     sorted_indices = np.argsort(skill_performances)
+    #     bottom_percent = int(self.weak_skills_threshold * len(sorted_indices))
+    #     weak_skills = sorted_indices[:bottom_percent]
+
+    #     # Get embeddings for the question and weak skills
+    #     question_embedding = self.current_question_embedding
+    #     weak_skill_names = np.array([self.all_skills[skill_id] for skill_id in weak_skills])
+    #     weak_skill_embeddings = self.sbert.encode(weak_skill_names)
+
+    #     # Calculate cosine similarities using sklearn
+    #     similarities = cosine_similarity(weak_skill_embeddings, question_embedding.reshape(1, -1)).flatten()
+
+    #     # Weight similarities by how weak each skill is (lower performance = higher weight)
+    #     weakness_weights = 1.0 - skill_performances[weak_skills]  # NumPy array
+    #     weighted_similarities = similarities * weakness_weights    # Element-wise multiplication
+
+    #     # Use average similarity as alignment score, normalized to [0, 1]
+    #     alignment_score = np.clip(np.mean(weighted_similarities), 0, 1)
+
+    #     return alignment_score
 
 
     def calculate_reward(self, improvement, answerability, coverage):
@@ -410,7 +418,10 @@ class QuestionSelectionEnv(gym.Env):
         question_row = matches.sample(1).iloc[0]
         question = question_row['question_text']
 
-        self.current_question_embedding = self.sbert.encode([question])[0]
+        # Cache question embedding
+        if question not in self.question_embedding_cache:
+            self.question_embedding_cache[question] = self.sbert.encode([question])[0]
+        self.current_question_embedding = self.question_embedding_cache[question]
 
         # Compute cosine similarities and store top_k_indices
         sims = cosine_similarity(self.skill_embs, self.current_question_embedding.reshape(1, -1)).flatten()
@@ -439,13 +450,13 @@ class QuestionSelectionEnv(gym.Env):
 
         skill = self.all_skills[skill_id]
         question_type = self.question_types[question_type_id]
+
+        # Get question from bank 
+        question = self.get_question_from_bank(skill, question_type)
         
         student_performance = self.predict_student_performance(skill_id, question_type_id)
         # Store performance history
         self.student_performance_history.append(student_performance)
-
-        # Get question from bank 
-        question = self.get_question_from_bank(skill, question_type)
 
         # Use average performance improvement across all skills
         if len(self.student_performance_history) > 1:
@@ -461,7 +472,7 @@ class QuestionSelectionEnv(gym.Env):
         reward = self.calculate_reward(improvement_reward, answerability, weak_skill_coverage)
 
         # Observation: student's predicted performance for all skills
-        observation = np.array([student_performance], dtype=np.float32)
+        observation = student_performance.astype(np.float32)
 
         info = {
             "question": question,
@@ -496,7 +507,7 @@ class QuestionSelectionEnv(gym.Env):
             f"Coverage: {info['coverage']:.3f} | "
             f"Reward: {reward:.3f}"
         )
-        print(f'Step {self.current_step} Complete')
+        # print(f'Step {self.current_step} Complete')
 
         return observation, reward, done, info
 
@@ -517,7 +528,7 @@ class QuestionSelectionEnv(gym.Env):
         Returns initial observation.
         """
         self.history = []
-        self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0.5
+        self.student_performance = np.ones(self.num_skills, dtype=np.float32) * 0
         self.current_step = 0 
         self.current_question_embedding = None
     
@@ -525,7 +536,7 @@ class QuestionSelectionEnv(gym.Env):
         self.student_performance_history = []
 
         # return neutral performance for all skills
-        return np.ones(self.num_skills, dtype=np.float32) * 0.5
+        return np.ones(self.num_skills, dtype=np.float32) * 0
 
     def seed(self, seed=None):
         """
