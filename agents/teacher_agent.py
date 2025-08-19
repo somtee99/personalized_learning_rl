@@ -11,7 +11,7 @@ questions_df = pd.read_csv("./data/questions.csv")
 os.makedirs("./trainings", exist_ok=True)
 os.makedirs("./models/teacher", exist_ok=True)
 
-env = QuestionSelectionEnv(questions_df, max_steps=250)
+env = QuestionSelectionEnv(questions_df, max_steps=250, action_types=['skill'])
 
 vec_env = make_vec_env(lambda: env, n_envs=1)
 
@@ -34,5 +34,5 @@ model = PPO(
     policy_kwargs=dict(net_arch=[128, 128])
 )
 print("Starting training...")
-model.learn(total_timesteps=500000)
+model.learn(total_timesteps=200000)
 model.save("./models/teacher/ppo_teacher_agent")
